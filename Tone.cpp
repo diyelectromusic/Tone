@@ -1,8 +1,10 @@
 /*
 || @author         Brett Hagman <bhagman@wiring.org.co>
 || @contribution   Fotis Papadopoulos <fpapadopou@gmail.com>
+|| @contribution   Kevin <diyelectromusic@gmail.com>
 || @url            http://wiring.org.co/
 || @url            http://roguerobotics.com/
+|| @url            https://diyelectromusic.wordpress.com/
 ||
 || @description
 || | A Software Digital Square Wave Tone Generation Library
@@ -73,9 +75,22 @@ volatile uint8_t timer0_pin_mask;
 volatile int32_t timer1_toggle_count;
 volatile uint8_t *timer1_pin_port;
 volatile uint8_t timer1_pin_mask;
+
+#if !defined(__AVR_ATmega32U4__)
 volatile int32_t timer2_toggle_count;
 volatile uint8_t *timer2_pin_port;
 volatile uint8_t timer2_pin_mask;
+#else
+volatile int32_t timer3_toggle_count;
+volatile uint8_t *timer3_pin_port;
+volatile uint8_t timer3_pin_mask;
+// Note: Timer 4 for the ATmega32U4 is a 10-bit timer, so we
+//       can't use the same definitions as the 1280/2560 where
+//       Timer 4 is a 16-bit timer.
+volatile int32_t timer4_toggle_count;
+volatile uint8_t *timer4_pin_port;
+volatile uint8_t timer4_pin_mask;
+#endif
 
 #if defined(__AVR_ATmega1280__)
 volatile int32_t timer3_toggle_count;
@@ -90,7 +105,13 @@ volatile uint8_t timer5_pin_mask;
 #endif
 
 
-#if defined(__AVR_ATmega1280__)
+#if defined(__AVR_ATmega32U4__)
+
+#define AVAILABLE_TONE_PINS 4
+
+const uint8_t PROGMEM tone_pin_to_timer_PGM[] = { 3, 4, 1, 0};
+
+#elif defined(__AVR_ATmega1280__)
 
 #define AVAILABLE_TONE_PINS 6
 
@@ -165,6 +186,7 @@ ISR(TIMER1_COMPA_vect)
 }
 
 
+#if !defined(__AVR_ATmega32U4__)
 #ifdef WIRING
 void Tone_Timer2_Interrupt(void)
 #else
@@ -189,10 +211,11 @@ ISR(TIMER2_COMPA_vect)
   
   timer2_toggle_count = temp_toggle_count;
 }
+#endif
 
 
 
-#if defined(__AVR_ATmega1280__)
+#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega32U4__)
 
 #ifdef WIRING
 void Tone_Timer3_Interrupt(void)
@@ -214,6 +237,35 @@ ISR(TIMER3_COMPA_vect)
     *timer3_pin_port &= ~(timer3_pin_mask);   // keep pin low after stop
   }
 }
+
+#endif
+
+#if defined(__AVR_ATmega32U4__)
+
+#ifdef WIRING
+void Tone_Timer4_Interrupt(void)
+#else
+ISR(TIMER4_OVF_vect)
+#endif
+{
+  if (timer4_toggle_count != 0)
+  {
+    // toggle the pin
+    *timer4_pin_port ^= timer4_pin_mask;
+
+    if (timer4_toggle_count > 0)
+      timer4_toggle_count--;
+  }
+  else
+  {
+    TIMSK4 &= ~(1 << TOIE4);                 // disable the interrupt
+    *timer4_pin_port &= ~(timer4_pin_mask);   // keep pin low after stop
+  }
+}
+
+#endif
+
+#if defined(__AVR_ATmega1280__)
 
 #ifdef WIRING
 void Tone_Timer4_Interrupt(void)
@@ -301,6 +353,8 @@ void Tone::begin(uint8_t tonePin)
         Timer1.attachInterrupt(INTERRUPT_COMPARE_MATCH_A, Tone_Timer1_Interrupt);
 #endif
         break;
+
+#if !defined(__AVR_ATmega32U4__)
       case 2:
         // 8 bit timer
         TCCR2A = 0;
@@ -313,6 +367,38 @@ void Tone::begin(uint8_t tonePin)
         Timer2.attachInterrupt(INTERRUPT_COMPARE_MATCH_A, Tone_Timer2_Interrupt);
 #endif
       break;
+#else // ATmega32U4
+      case 3:
+        // 16 bit timer
+        TCCR3A = 0;
+        TCCR3B = 0;
+        bitWrite(TCCR3B, WGM32, 1);
+        bitWrite(TCCR3B, CS30, 1);
+        timer3_pin_port = portOutputRegister(digitalPinToPort(_pin));
+        timer3_pin_mask = digitalPinToBitMask(_pin);
+#ifdef WIRING
+        Timer3.attachInterrupt(INTERRUPT_COMPARE_MATCH_A, Tone_Timer3_Interrupt);
+#endif
+        break;
+      case 4:
+        // 10 bit timer running in 8-bit mode.
+        // Unlike the other timers here, this runs in "normal" mode
+        // and resets on comparison with OCR4C giving the illusion
+        // of a "CTC" mode.
+        TCCR4A = 0;  // COM4A/COM4B all 0, not comparitor output to pins; PWM4A/B=0
+        TCCR4B = 0;  // Prescaler set shortly
+        TCCR4C = 0;  // COM4A/B/D all 0
+        TCCR4D = 0;  // WGM41/40 = 0, "normal" mode: TOP=OCR4C, TOV4 set at TOP
+        TCCR4E = 0;  // No overrides/enhanced functions
+        bitWrite(TCCR4B, CS40, 1); // Initial prescalar = clk/1
+        timer4_pin_port = portOutputRegister(digitalPinToPort(_pin));
+        timer4_pin_mask = digitalPinToBitMask(_pin);
+#ifdef WIRING
+        // I have no idea if this works (or even compiles)!  Untested...
+        Timer4.attachInterrupt(INTERRUPT_COMPARE_OVF, Tone_Timer4_Interrupt);
+#endif
+        break;
+#endif
 
 #if defined(__AVR_ATmega1280__)
       case 3:
@@ -417,13 +503,96 @@ void Tone::play(uint16_t frequency, uint32_t duration)
         }
       }
 
+#if defined(__AVR_ATmega32U4__)
+      if (_timer == 0)
+        TCCR0B = (TCCR0B & 0b11111000) | prescalarbits;
+#else
 #if !defined(__AVR_ATmega8__)
       if (_timer == 0)
         TCCR0B = (TCCR0B & 0b11111000) | prescalarbits;
       else
 #endif
         TCCR2B = (TCCR2B & 0b11111000) | prescalarbits;
+#endif
     }
+#if defined(__AVR_ATmega32U4__)
+    else if (_timer == 4) {
+       // Timer 4 is handled as an 8-bit timer but has more prescalar options
+       ocr = F_CPU / frequency / 2 - 1;
+       prescalarbits = 0b0001;  // ck/1
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 2 - 1;
+          prescalarbits = 0b0010;  // ck/2
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 4 - 1;
+          prescalarbits = 0b0011;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 8 - 1;
+          prescalarbits = 0b0100;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 16 - 1;
+          prescalarbits = 0b0101;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 32 - 1;
+          prescalarbits = 0b0110;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 64 - 1;
+          prescalarbits = 0b0111;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 128 - 1;
+          prescalarbits = 0b1000;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 256 - 1;
+          prescalarbits = 0b1001;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 512 - 1;
+          prescalarbits = 0b1010;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 1024 - 1;
+          prescalarbits = 0b1011;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 2048 - 1;
+          prescalarbits = 0b1100;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 4096 - 1;
+          prescalarbits = 0b1101;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 8192 - 1;
+          prescalarbits = 0b1110;
+       }
+       if (ocr > 255)
+       {
+          ocr = F_CPU / frequency / 2 / 16384 - 1;
+          prescalarbits = 0b1111;
+       }
+       TCCR4B = (TCCR4B & 0b11110000) | prescalarbits;
+    }
+#endif
     else
     {
       // two choices for the 16 bit timers: ck/1 or ck/64
@@ -438,6 +607,11 @@ void Tone::play(uint16_t frequency, uint32_t duration)
 
       if (_timer == 1)
         TCCR1B = (TCCR1B & 0b11111000) | prescalarbits;
+#if defined(__AVR_ATmega32U4__)
+      // Timer 4 is already handled as an 8-bit timer
+      else if (_timer == 3)
+        TCCR3B = (TCCR3B & 0b11111000) | prescalarbits;
+#endif
 #if defined(__AVR_ATmega1280__)
       else if (_timer == 3)
         TCCR3B = (TCCR3B & 0b11111000) | prescalarbits;
@@ -479,11 +653,26 @@ void Tone::play(uint16_t frequency, uint32_t duration)
         timer1_toggle_count = toggle_count;
         bitWrite(TIMSK1, OCIE1A, 1);
         break;
+
+#if !defined(__AVR_ATmega32U4__)
       case 2:
         OCR2A = ocr;
         timer2_toggle_count = toggle_count;
         bitWrite(TIMSK2, OCIE2A, 1);
         break;
+#else
+      case 3:
+        OCR3A = ocr;
+        timer3_toggle_count = toggle_count;
+        bitWrite(TIMSK3, OCIE3A, 1);
+        break;
+      case 4:
+        TC4H = 0;
+        OCR4C = ocr;
+        timer4_toggle_count = toggle_count;
+        bitWrite(TIMSK4, TOIE4, 1);
+        break;
+#endif
 
 #if defined(__AVR_ATmega1280__)
       case 3:
@@ -520,10 +709,19 @@ void Tone::stop()
     case 1:
       TIMSK1 &= ~(1 << OCIE1A);
       break;
+#if !defined(__AVR_ATmega32U4__)
     case 2:
       TIMSK2 &= ~(1 << OCIE2A);
       break;
 
+#else
+    case 3:
+      TIMSK3 &= ~(1 << OCIE3A);
+      break;
+    case 4:
+      TIMSK4 &= ~(1 << TOIE4);
+      break;
+#endif
 #if defined(__AVR_ATmega1280__)
     case 3:
       TIMSK3 &= ~(1 << OCIE3A);
@@ -556,10 +754,19 @@ bool Tone::isPlaying(void)
     case 1:
       returnvalue = (TIMSK1 & (1 << OCIE1A));
       break;
+#if !defined(__AVR_ATmega32U4__)
     case 2:
       returnvalue = (TIMSK2 & (1 << OCIE2A));
       break;
 
+#else
+    case 3:
+      returnvalue = (TIMSK3 & (1 << OCIE3A));
+      break;
+    case 4:
+      returnvalue = (TIMSK4 & (1 << TOIE4));
+      break;
+#endif
 #if defined(__AVR_ATmega1280__)
     case 3:
       returnvalue = (TIMSK3 & (1 << OCIE3A));

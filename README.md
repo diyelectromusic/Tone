@@ -215,8 +215,11 @@ You can output the tones on any pin (arbitrary).  The number of tones that can b
  * ATmega8: 2 (timers 2, and 1)
  * ATmega168/328: 3 (timers 2, 1, and 0)
  * ATmega1280: 6 (timers 2, 3, 4, 5, 1, 0)
+ * ATmega32U4: 4 (timers 3, 4, 1, and 0)
 
 The timer order given above is the order in which the timers are allocated.  Timer 0 is a sensitive timer on the Arduino since it provides `millis()` and PWM functionality.
+
+If you are using all available tones and find your script appears to hang completely then check that you aren't also trying to use the delay() function somewhere. An alternative in some instances might be to use the AVR library's `_delay_ms()` function instead.
 
 The range of frequencies that can be produced depends on the microcontroller clock frequency and the timer which is being used:
 
